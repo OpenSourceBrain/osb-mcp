@@ -12,6 +12,7 @@ Author: Ankur Sinha <sanjay DOT ankur AT gmail DOT com>
 """
 
 import asyncio
+import json
 import logging
 import os
 from typing import Annotated, Any
@@ -103,7 +104,13 @@ async def _post_json(session, url, payload, headers):
         )
     response.raise_for_status()
     if response.content:
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {
+                "status_code": response.status_code,
+                "body": response.text[:2000],
+            }
     return {"status_code": response.status_code}
 
 
@@ -187,13 +194,16 @@ async def create_workspace(
 
     try:
         res = await _post_json(session, url, payload, _auth_headers())
-    except (httpx.HTTPError, TimeoutError) as e:
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error creating workspace: {e.__class__.__name__}: {e}"
             f"{_http_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
 
     return to_result(res)
 
@@ -258,7 +268,7 @@ async def upload_files_to_workspace(
 
     try:
         res = await _post_json(session, url, payload, _auth_headers())
-    except (httpx.HTTPError, TimeoutError) as e:
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
             f"{_http_error_detail(e)}"
