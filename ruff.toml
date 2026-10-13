@@ -1,0 +1,7 @@
+# Ruff config for the OSB MCP package.
+# Mirrors the Klea convention: every .py file carries a shebang (see
+# AGENTS.md) but the files are not executed directly.
+[lint]
+ignore = [
+    "EXE001",   # Shebang on non-executable file -- project-wide convention
+]
