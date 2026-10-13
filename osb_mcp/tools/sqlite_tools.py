@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Annotated
 
+from fastmcp import Context
 from fastmcp.tools import ToolResult
 from klea_utils.mcp.registry import tool_meta
 from klea_utils.mcp.schemas import ToolInfo
@@ -60,6 +61,7 @@ def _osb_db_path() -> Path:
     )
 )
 async def query_osb_sqlite(
+    ctx: Context,
     sql: Annotated[
         str,
         Field(
@@ -126,7 +128,7 @@ async def query_osb_sqlite(
         open_world=False,
     )
 )
-async def list_osb_sqlite_schema() -> ToolResult:
+async def list_osb_sqlite_schema(ctx: Context) -> ToolResult:
     """List the tables and columns of the OSB repository database.
 
     Use this tool to confirm the schema of the OSB repository index

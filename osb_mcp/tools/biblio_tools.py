@@ -18,6 +18,7 @@ import logging
 import os
 from typing import Annotated
 
+from fastmcp import Context
 from fastmcp.tools import ToolResult
 from klea_utils.biblio.doi import DoiResolver
 from klea_utils.mcp.registry import tool_meta
@@ -63,6 +64,7 @@ def _get_resolver() -> DoiResolver:
     )
 )
 async def get_paper_by_doi(
+    ctx: Context,
     doi: Annotated[
         str,
         Field(

@@ -31,6 +31,8 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from osb_mcp.auth import resolve_auth
+
 logger = logging.getLogger(__name__)
 
 #: Environment variable overriding the base URL of the OSB Workspaces
@@ -51,19 +53,6 @@ def _api_base_url() -> str:
     return os.environ.get(
         OSB_WORKSPACES_API_URL_ENV, OSB_WORKSPACES_API_URL_DEFAULT
     ).rstrip("/")
-
-
-def _auth_headers() -> dict[str, str]:
-    """Return the Authorization header for the Workspaces manager API.
-
-    The bearer token is read from the ``OSB_API_TOKEN`` environment
-    variable.  When it is unset an empty mapping is returned and the
-    request is sent unauthenticated (the API will reject it).
-    """
-    token = os.environ.get(OSB_API_TOKEN_ENV)
-    if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _http_error_detail(exc: Exception) -> str:
@@ -248,6 +237,10 @@ async def create_workspace(
     if session is None:
         return to_result({"Error": "OSB session not initialized"})
 
+    headers, error = resolve_auth(ctx, required=True)
+    if error is not None:
+        return to_result(error)
+
     payload: dict[str, Any] = {
         "name": name,
         "description": description,
@@ -262,7 +255,7 @@ async def create_workspace(
     url = f"{_api_base_url()}/workspace"
 
     try:
-        res = await _post_json(session, url, payload, _auth_headers())
+        res = await _post_json(session, url, payload, headers)
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error creating workspace: {e.__class__.__name__}: {e}"
@@ -332,11 +325,15 @@ async def upload_files_to_workspace(
     if session is None:
         return to_result({"Error": "OSB session not initialized"})
 
+    headers, error = resolve_auth(ctx, required=True)
+    if error is not None:
+        return to_result(error)
+
     payload = {"resourceorigins": files}
     url = f"{_api_base_url()}/workspace/{workspace_id}/import"
 
     try:
-        res = await _post_json(session, url, payload, _auth_headers())
+        res = await _post_json(session, url, payload, headers)
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
@@ -416,6 +413,8 @@ async def get_workspaces(
     if session is None:
         return to_result({"Error": "OSB session not initialized"})
 
+    headers, _ = resolve_auth(ctx, required=False)
+
     params: dict[str, Any] = {"page": page, "per_page": per_page}
     if q is not None:
         params["q"] = q
@@ -425,10 +424,68 @@ async def get_workspaces(
     url = f"{_api_base_url()}/workspace"
 
     try:
-        res = await _get_json(session, url, params, _auth_headers())
+        res = await _get_json(session, url, params, headers)
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error getting workspaces: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
+
+    return to_result(res)
+
+
+@tool_meta(
+    ToolInfo(
+        title="Get a workspace on Open Source Brain",
+        tags={"osb", "workspace"},
+        read_only=True,
+        open_world=True,
+    )
+)
+async def get_workspace(
+    ctx: Context,
+    workspace_id: Annotated[int, Field(description="ID of the workspace to retrieve.")],
+) -> ToolResult:
+    """Retrieve a workspace from the Open Source Brain (v2) platform.
+
+    Use this tool to fetch a single workspace, including its resources, by
+    its ID.
+
+    Use when:
+    - Retrieving the details of a workspace.
+    - Listing the resources of a workspace before deleting one.
+
+    Do not use for:
+    - Listing all workspaces (use get_workspaces instead).
+    - Creating a workspace (use create_workspace instead).
+
+    Example: get_workspace(workspace_id=1)
+
+    Args:
+        workspace_id: ID of the workspace to retrieve.
+
+    Returns:
+        Dictionary of the workspace (including its ``resources``) on
+        success, or a dictionary with an ``Error`` key on failure.
+    """
+    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
+    if session is None:
+        return to_result({"Error": "OSB session not initialized"})
+
+    headers, _ = resolve_auth(ctx, required=False)
+
+    url = f"{_api_base_url()}/workspace/{workspace_id}"
+
+    try:
+        res = await _get_json(session, url, headers=headers)
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        error_text = (
+            f"Error getting workspace: {e.__class__.__name__}: {e}"
             f"{_http_error_detail(e)}"
         )
         logger.error(error_text)
@@ -477,10 +534,14 @@ async def delete_workspace(
     if session is None:
         return to_result({"Error": "OSB session not initialized"})
 
+    headers, error = resolve_auth(ctx, required=True)
+    if error is not None:
+        return to_result(error)
+
     url = f"{_api_base_url()}/workspace/{workspace_id}"
 
     try:
-        res = await _delete_json(session, url, _auth_headers())
+        res = await _delete_json(session, url, headers)
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error deleting workspace: {e.__class__.__name__}: {e}"
@@ -534,10 +595,14 @@ async def delete_resource(
     if session is None:
         return to_result({"Error": "OSB session not initialized"})
 
+    headers, error = resolve_auth(ctx, required=True)
+    if error is not None:
+        return to_result(error)
+
     url = f"{_api_base_url()}/workspaceresource/{resource_id}"
 
     try:
-        res = await _delete_json(session, url, _auth_headers())
+        res = await _delete_json(session, url, headers)
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error deleting resource: {e.__class__.__name__}: {e}"

@@ -13,6 +13,7 @@ import logging
 
 import httpx
 
+from osb_mcp import auth
 from osb_mcp.tools import workspace_tools
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ async def test_workspace_tools_register():
         "create_workspace",
         "delete_resource",
         "delete_workspace",
+        "get_workspace",
         "get_workspaces",
         "upload_files_to_workspace",
     ]
@@ -59,6 +61,7 @@ async def test_create_workspace(monkeypatch):
     monkeypatch.setenv(
         workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
     )
+    monkeypatch.setenv("OSB_API_TOKEN", "test-token")
     captured = {}
 
     def handler(request):
@@ -113,6 +116,7 @@ async def test_upload_files_to_workspace(monkeypatch):
     monkeypatch.setenv(
         workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
     )
+    monkeypatch.setenv("OSB_API_TOKEN", "test-token")
     captured = {}
 
     def handler(request):
@@ -186,6 +190,7 @@ async def test_delete_workspace(monkeypatch):
     monkeypatch.setenv(
         workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
     )
+    monkeypatch.setenv("OSB_API_TOKEN", "test-token")
     captured = {}
 
     def handler(request):
@@ -218,6 +223,7 @@ async def test_delete_resource(monkeypatch):
     monkeypatch.setenv(
         workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
     )
+    monkeypatch.setenv("OSB_API_TOKEN", "test-token")
     captured = {}
 
     def handler(request):
@@ -244,3 +250,51 @@ async def test_delete_resource_no_session():
     logger.debug(f"{result = }")
     assert "Error" in result.structured_content
     assert "OSB session not initialized" in result.structured_content["Error"]
+
+
+async def test_create_workspace_missing_credential(monkeypatch):
+    monkeypatch.setenv(
+        workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
+    )
+    monkeypatch.delenv("OSB_API_TOKEN", raising=False)
+    monkeypatch.delenv("OSB_USERNAME", raising=False)
+    monkeypatch.delenv("OSB_PASSWORD", raising=False)
+    monkeypatch.setattr(auth, "_cached_token", None)
+
+    session = _make_session(lambda request: httpx.Response(200, json={}))
+    ctx = _FakeContext(session)
+
+    result = await workspace_tools.create_workspace(
+        ctx, name="My workspace", description="A demo workspace"
+    )
+    logger.debug(f"{result = }")
+    assert "Error" in result.structured_content
+    assert "Authentication required" in result.structured_content["Error"]
+    await session.aclose()
+
+
+async def test_create_workspace_uses_authorization_header(monkeypatch):
+    monkeypatch.setenv(
+        workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
+    )
+    monkeypatch.setenv("OSB_API_TOKEN", "env-token")
+    monkeypatch.setattr(
+        "fastmcp.server.dependencies.get_http_headers",
+        lambda include=None: {"authorization": "Bearer header-token"},
+    )
+    captured = {}
+
+    def handler(request):
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"id": 1, "name": "My workspace"})
+
+    session = _make_session(handler)
+    ctx = _FakeContext(session)
+
+    result = await workspace_tools.create_workspace(
+        ctx, name="My workspace", description="A demo workspace"
+    )
+    logger.debug(f"{result = }")
+    assert not result.is_error
+    assert captured["auth"] == "Bearer header-token"
+    await session.aclose()

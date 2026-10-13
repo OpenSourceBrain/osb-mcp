@@ -67,7 +67,7 @@ async def test_query_tool_description_embeds_schema():
 async def test_query_osb_sqlite_reads_rows(tmp_path, monkeypatch):
     _point_env(tmp_path, monkeypatch)
     result = await sqlite_tools.query_osb_sqlite(
-        sql="SELECT name, uri FROM repos ORDER BY id"
+        None, sql="SELECT name, uri FROM repos ORDER BY id"
     )
     logger.debug(f"{result = }")
     assert not result.is_error
@@ -85,6 +85,7 @@ async def test_query_osb_sqlite_reads_rows(tmp_path, monkeypatch):
 async def test_query_osb_sqlite_respects_limit(tmp_path, monkeypatch):
     _point_env(tmp_path, monkeypatch)
     result = await sqlite_tools.query_osb_sqlite(
+        None,
         sql="SELECT name FROM repos",
         limit=1,
     )
@@ -98,7 +99,7 @@ async def test_query_osb_sqlite_respects_limit(tmp_path, monkeypatch):
 
 async def test_list_osb_sqlite_schema_lists_tables(tmp_path, monkeypatch):
     _point_env(tmp_path, monkeypatch)
-    result = await sqlite_tools.list_osb_sqlite_schema()
+    result = await sqlite_tools.list_osb_sqlite_schema(None)
     logger.debug(f"{result = }")
     assert not result.is_error
     data = result.structured_content
@@ -110,7 +111,7 @@ async def test_list_osb_sqlite_schema_lists_tables(tmp_path, monkeypatch):
 
 async def test_query_osb_sqlite_rejects_non_select(tmp_path, monkeypatch):
     _point_env(tmp_path, monkeypatch)
-    result = await sqlite_tools.query_osb_sqlite(sql="DELETE FROM repos")
+    result = await sqlite_tools.query_osb_sqlite(None, sql="DELETE FROM repos")
     logger.debug(f"{result = }")
     assert result.is_error
     data = result.structured_content
@@ -120,7 +121,7 @@ async def test_query_osb_sqlite_rejects_non_select(tmp_path, monkeypatch):
 
 async def test_query_osb_sqlite_unknown_table_hint(tmp_path, monkeypatch):
     _point_env(tmp_path, monkeypatch)
-    result = await sqlite_tools.query_osb_sqlite(sql="SELECT * FROM nope")
+    result = await sqlite_tools.query_osb_sqlite(None, sql="SELECT * FROM nope")
     logger.debug(f"{result = }")
     assert result.is_error
     data = result.structured_content

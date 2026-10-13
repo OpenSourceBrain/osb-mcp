@@ -97,7 +97,7 @@ async def test_get_paper_by_doi_resolves(tmp_path, monkeypatch):
     resolver = _make_resolver(tmp_path, _handler_for(route))
     monkeypatch.setattr(biblio_tools, "_resolver", resolver)
 
-    result = await biblio_tools.get_paper_by_doi(doi="10.1234/abc.5678")
+    result = await biblio_tools.get_paper_by_doi(None, doi="10.1234/abc.5678")
     logger.debug(f"{result = }")
     assert not result.is_error
     data = result.structured_content
@@ -117,7 +117,7 @@ async def test_get_paper_by_doi_unresolvable(tmp_path, monkeypatch):
     resolver = _make_resolver(tmp_path, _handler_for(route))
     monkeypatch.setattr(biblio_tools, "_resolver", resolver)
 
-    result = await biblio_tools.get_paper_by_doi(doi="10.9999/nope.0000")
+    result = await biblio_tools.get_paper_by_doi(None, doi="10.9999/nope.0000")
     logger.debug(f"{result = }")
     assert result.is_error
     data = result.structured_content
