@@ -65,6 +65,19 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _http_error_detail(exc: Exception) -> str:
+    """Return the HTTP status and response body for an HTTP status error.
+
+    ``httpx.HTTPStatusError`` carries the failing response, whose body is
+    otherwise discarded by ``raise_for_status``.  Other ``httpx.HTTPError``
+    subclasses (for example ``ConnectError``) have no response, so an empty
+    string is returned for them.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f" (HTTP {exc.response.status_code}): {exc.response.text[:2000]}"
+    return ""
+
+
 @retry(
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
@@ -81,6 +94,13 @@ async def _post_json(session, url, payload, headers):
         follow_redirects=True,
     )
     logger.debug(f"{response.request = }")
+    if response.is_error:
+        logger.error(
+            "HTTP %s from %s: %s",
+            response.status_code,
+            url,
+            response.text[:2000],
+        )
     response.raise_for_status()
     if response.content:
         return response.json()
@@ -168,7 +188,10 @@ async def create_workspace(
     try:
         res = await _post_json(session, url, payload, _auth_headers())
     except (httpx.HTTPError, TimeoutError) as e:
-        error_text = f"Error creating workspace: {e.__class__.__name__}: {e}"
+        error_text = (
+            f"Error creating workspace: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
@@ -236,8 +259,14 @@ async def upload_files_to_workspace(
     try:
         res = await _post_json(session, url, payload, _auth_headers())
     except (httpx.HTTPError, TimeoutError) as e:
-        error_text = f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
+        error_text = (
+            f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
         logger.error(error_text)
         return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
 
     return to_result(res)
