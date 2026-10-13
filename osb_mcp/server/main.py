@@ -27,7 +27,7 @@ async def create_server(port: int = 8542):
     from starlette.requests import Request
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from osb_mcp.tools import biblio_tools, osb_tools, sqlite_tools
+    from osb_mcp.tools import biblio_tools, osb_tools, sqlite_tools, workspace_tools
     from osb_mcp.tools.repositories import biomodels, dandi, download, figshare, github
 
     from .app_lifespan import app_lifespan
@@ -50,6 +50,7 @@ async def create_server(port: int = 8542):
             dandi,
             biomodels,
             download,
+            workspace_tools,
         ],
     )
 
