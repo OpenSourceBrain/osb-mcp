@@ -37,9 +37,10 @@ EXPECTED_TOOL_NAMES = [
 class _FakeResponse:
     """Minimal httpx-like response carrying JSON or raw bytes."""
 
-    def __init__(self, payload, status: int = 200):
+    def __init__(self, payload, status: int = 200, headers: dict | None = None):
         self._payload = payload
         self.status_code = status
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -105,7 +106,13 @@ def _fast_waits(monkeypatch):
 def _hermetic_ssrf(monkeypatch):
     # Mock tests must not perform real DNS resolution for the SSRF guards.
     monkeypatch.setattr(repo_sources, "check_ssrf", lambda url: None)
-    monkeypatch.setattr(download_file_module, "check_ssrf", lambda url: None)
+
+    async def _noop_check_ssrf_async(url, timeout=None):
+        return None
+
+    monkeypatch.setattr(
+        download_file_module, "check_ssrf_async", _noop_check_ssrf_async
+    )
 
 
 async def test_repository_tools_register():
