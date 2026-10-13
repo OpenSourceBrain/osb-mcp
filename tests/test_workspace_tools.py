@@ -48,6 +48,9 @@ async def test_workspace_tools_register():
     tools = await mcp.list_tools()
     assert [t.name for t in tools] == [
         "create_workspace",
+        "delete_resource",
+        "delete_workspace",
+        "get_workspaces",
         "upload_files_to_workspace",
     ]
 
@@ -141,3 +144,103 @@ async def test_upload_files_to_workspace_empty_files():
     logger.debug(f"{result = }")
     assert "Error" in result.structured_content
     assert "files must be a non-empty list" in result.structured_content["Error"]
+
+
+async def test_get_workspaces(monkeypatch):
+    monkeypatch.setenv(
+        workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
+    )
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(
+            200, json={"results": [{"id": 1, "name": "My workspace"}]}
+        )
+
+    session = _make_session(handler)
+    ctx = _FakeContext(session)
+
+    result = await workspace_tools.get_workspaces(ctx, page=1, per_page=20)
+    logger.debug(f"{result = }")
+    assert not result.is_error
+    assert result.structured_content == {"results": [{"id": 1, "name": "My workspace"}]}
+    assert captured["method"] == "GET"
+    assert captured["url"].split("?")[0] == "https://example.test/api/workspace"
+    assert captured["params"] == {"page": "1", "per_page": "20"}
+    await session.aclose()
+
+
+async def test_get_workspaces_no_session():
+    ctx = _FakeContext(None)
+
+    result = await workspace_tools.get_workspaces(ctx)
+    logger.debug(f"{result = }")
+    assert "Error" in result.structured_content
+    assert "OSB session not initialized" in result.structured_content["Error"]
+
+
+async def test_delete_workspace(monkeypatch):
+    monkeypatch.setenv(
+        workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
+    )
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        return httpx.Response(200, json={"status": "ok"})
+
+    session = _make_session(handler)
+    ctx = _FakeContext(session)
+
+    result = await workspace_tools.delete_workspace(ctx, workspace_id=1)
+    logger.debug(f"{result = }")
+    assert not result.is_error
+    assert result.structured_content == {"status": "ok"}
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "https://example.test/api/workspace/1"
+    await session.aclose()
+
+
+async def test_delete_workspace_no_session():
+    ctx = _FakeContext(None)
+
+    result = await workspace_tools.delete_workspace(ctx, workspace_id=1)
+    logger.debug(f"{result = }")
+    assert "Error" in result.structured_content
+    assert "OSB session not initialized" in result.structured_content["Error"]
+
+
+async def test_delete_resource(monkeypatch):
+    monkeypatch.setenv(
+        workspace_tools.OSB_WORKSPACES_API_URL_ENV, "https://example.test/api"
+    )
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        return httpx.Response(200, json={"status": "ok"})
+
+    session = _make_session(handler)
+    ctx = _FakeContext(session)
+
+    result = await workspace_tools.delete_resource(ctx, resource_id=1)
+    logger.debug(f"{result = }")
+    assert not result.is_error
+    assert result.structured_content == {"status": "ok"}
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "https://example.test/api/workspaceresource/1"
+    await session.aclose()
+
+
+async def test_delete_resource_no_session():
+    ctx = _FakeContext(None)
+
+    result = await workspace_tools.delete_resource(ctx, resource_id=1)
+    logger.debug(f"{result = }")
+    assert "Error" in result.structured_content
+    assert "OSB session not initialized" in result.structured_content["Error"]

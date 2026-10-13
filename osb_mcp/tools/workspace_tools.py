@@ -114,6 +114,75 @@ async def _post_json(session, url, payload, headers):
     return {"status_code": response.status_code}
 
 
+@retry(
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
+    reraise=True,
+)
+async def _get_json(session, url, params=None, headers=None):
+    """GET a JSON resource from the Workspaces manager API with retries."""
+    response = await session.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+        follow_redirects=True,
+    )
+    logger.debug(f"{response.request = }")
+    if response.is_error:
+        logger.error(
+            "HTTP %s from %s: %s",
+            response.status_code,
+            url,
+            response.text[:2000],
+        )
+    response.raise_for_status()
+    if response.content:
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {
+                "status_code": response.status_code,
+                "body": response.text[:2000],
+            }
+    return {"status_code": response.status_code}
+
+
+@retry(
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
+    reraise=True,
+)
+async def _delete_json(session, url, headers):
+    """DELETE a resource from the Workspaces manager API with retries."""
+    response = await session.delete(
+        url,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+        follow_redirects=True,
+    )
+    logger.debug(f"{response.request = }")
+    if response.is_error:
+        logger.error(
+            "HTTP %s from %s: %s",
+            response.status_code,
+            url,
+            response.text[:2000],
+        )
+    response.raise_for_status()
+    if response.content:
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {
+                "status_code": response.status_code,
+                "body": response.text[:2000],
+            }
+    return {"status_code": response.status_code}
+
+
 @tool_meta(
     ToolInfo(
         title="Create a workspace on Open Source Brain",
@@ -271,6 +340,207 @@ async def upload_files_to_workspace(
     except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
         error_text = (
             f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
+
+    return to_result(res)
+
+
+@tool_meta(
+    ToolInfo(
+        title="List workspaces on Open Source Brain",
+        tags={"osb", "workspace"},
+        read_only=True,
+        open_world=True,
+    )
+)
+async def get_workspaces(
+    ctx: Context,
+    page: Annotated[
+        int,
+        Field(description="The page number for starting to collect the result set."),
+    ] = 1,
+    per_page: Annotated[int, Field(description="The number of items to return.")] = 20,
+    q: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The search string for filtering the workspaces, e.g. "
+                "'name__like=Work%+id__=1+tags[tag]=Tag'."
+            )
+        ),
+    ] = None,
+    tags: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The tags to filter with, concatenated with '+' (OR "
+                "operator), e.g. 'tag1+tag2'."
+            )
+        ),
+    ] = None,
+) -> ToolResult:
+    """List workspaces on the Open Source Brain (v2) platform.
+
+    Use this tool to retrieve the workspaces available on OSBv2, optionally
+    filtering them by a search string or tags and paging through the
+    results.
+
+    Use when:
+    - Listing the workspaces available on OSBv2.
+    - Finding the ID of a workspace before adding resources to it or
+      deleting it.
+
+    Do not use for:
+    - Creating a workspace (use create_workspace instead).
+    - Adding files to a workspace (use upload_files_to_workspace instead).
+
+    Example: get_workspaces(q="name__like=Work%")
+
+    Args:
+        page: The page number for starting to collect the result set.
+        per_page: The number of items to return.
+        q: The search string for filtering the workspaces.
+        tags: The tags to filter with, concatenated with '+' (OR operator).
+
+    Returns:
+        Dictionary of the matching workspaces and pagination on success, or
+        a dictionary with an ``Error`` key on failure.
+    """
+    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
+    if session is None:
+        return to_result({"Error": "OSB session not initialized"})
+
+    params: dict[str, Any] = {"page": page, "per_page": per_page}
+    if q is not None:
+        params["q"] = q
+    if tags is not None:
+        params["tags"] = tags
+
+    url = f"{_api_base_url()}/workspace"
+
+    try:
+        res = await _get_json(session, url, params, _auth_headers())
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        error_text = (
+            f"Error getting workspaces: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
+
+    return to_result(res)
+
+
+@tool_meta(
+    ToolInfo(
+        title="Delete a workspace on Open Source Brain",
+        tags={"osb", "workspace"},
+        read_only=False,
+        open_world=True,
+    )
+)
+async def delete_workspace(
+    ctx: Context,
+    workspace_id: Annotated[int, Field(description="ID of the workspace to delete.")],
+) -> ToolResult:
+    """Delete a workspace on the Open Source Brain (v2) platform.
+
+    Use this tool to permanently remove an existing workspace from OSBv2.
+
+    Use when:
+    - Deleting a workspace that is no longer needed.
+
+    Do not use for:
+    - Deleting a single resource of a workspace (use delete_resource
+      instead).
+    - Creating a workspace (use create_workspace instead).
+
+    Example: delete_workspace(workspace_id=1)
+
+    Args:
+        workspace_id: ID of the workspace to delete.
+
+    Returns:
+        Dictionary with the API response on success, or a dictionary with
+        an ``Error`` key on failure.
+    """
+    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
+    if session is None:
+        return to_result({"Error": "OSB session not initialized"})
+
+    url = f"{_api_base_url()}/workspace/{workspace_id}"
+
+    try:
+        res = await _delete_json(session, url, _auth_headers())
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        error_text = (
+            f"Error deleting workspace: {e.__class__.__name__}: {e}"
+            f"{_http_error_detail(e)}"
+        )
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+
+    if not isinstance(res, dict):
+        res = {"status": res}
+
+    return to_result(res)
+
+
+@tool_meta(
+    ToolInfo(
+        title="Delete a resource from a workspace on Open Source Brain",
+        tags={"osb", "workspace"},
+        read_only=False,
+        open_world=True,
+    )
+)
+async def delete_resource(
+    ctx: Context,
+    resource_id: Annotated[
+        int, Field(description="ID of the workspace resource to delete.")
+    ],
+) -> ToolResult:
+    """Delete a resource from a workspace on the Open Source Brain (v2) platform.
+
+    Use this tool to permanently remove a single resource (file) from a
+    workspace on OSBv2.
+
+    Use when:
+    - Deleting a resource that is no longer needed from a workspace.
+
+    Do not use for:
+    - Deleting an entire workspace (use delete_workspace instead).
+    - Adding files to a workspace (use upload_files_to_workspace instead).
+
+    Example: delete_resource(resource_id=1)
+
+    Args:
+        resource_id: ID of the workspace resource to delete.
+
+    Returns:
+        Dictionary with the API response on success, or a dictionary with
+        an ``Error`` key on failure.
+    """
+    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
+    if session is None:
+        return to_result({"Error": "OSB session not initialized"})
+
+    url = f"{_api_base_url()}/workspaceresource/{resource_id}"
+
+    try:
+        res = await _delete_json(session, url, _auth_headers())
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        error_text = (
+            f"Error deleting resource: {e.__class__.__name__}: {e}"
             f"{_http_error_detail(e)}"
         )
         logger.error(error_text)
