@@ -1,8 +1,5 @@
 # OSB MCP
 
-Klea is a suite of AI tools for Neuroscience.
+MCP server for working with Open Source Brain v2.
 
-This package provides a Model Context Protocol (MCP) server for
-OSB tooling. 
-
-Documentation: https://neuroklea.org
+https://opensourcebrain.org
