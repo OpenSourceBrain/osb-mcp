@@ -35,6 +35,8 @@ OSB_KEYCLOAK_CLIENT_ID_ENV = "OSB_KEYCLOAK_CLIENT_ID"
 OSB_KEYCLOAK_CLIENT_SECRET_ENV = "OSB_KEYCLOAK_CLIENT_SECRET"
 #: Environment variable holding a pre-issued OSB bearer token.
 OSB_API_TOKEN_ENV = "OSB_API_TOKEN"
+#: Environment variable overriding the OSB (v2) API base URL.
+OSB_API_BASE_URL_ENV = "OSB_API_BASE_URL"
 
 #: Default Keycloak base URL of the production OSB (v2) deployment.
 OSB_KEYCLOAK_BASE_URL_DEFAULT = "https://accounts.v2.opensourcebrain.org/auth"
@@ -42,6 +44,10 @@ OSB_KEYCLOAK_BASE_URL_DEFAULT = "https://accounts.v2.opensourcebrain.org/auth"
 OSB_KEYCLOAK_REALM_DEFAULT = "osb2"
 #: Default Keycloak client id of the production OSB (v2) deployment.
 OSB_KEYCLOAK_CLIENT_ID_DEFAULT = "web-client"
+
+#: Default base URL of the production OSB (v2) API used by the generated
+#: clients.
+OSB_API_BASE_URL_DEFAULT = "https://api.v2.opensourcebrain.org"
 
 REQUEST_TIMEOUT = httpx.Timeout(30)
 
@@ -217,21 +223,7 @@ def resolve_auth(
         ``None`` if ``required`` is ``False``, otherwise a structured
         ``{"Error": ...}`` mapping.
     """
-    from fastmcp.server.dependencies import get_http_headers
-
-    request_headers = get_http_headers(include={"authorization"})
-    authorization = request_headers.get("authorization")
-    if authorization:
-        return {"Authorization": authorization}, None
-
-    token = os.environ.get(OSB_API_TOKEN_ENV)
-    if token:
-        return {"Authorization": f"Bearer {token}"}, None
-
-    try:
-        token = get_access_token()
-    except KeycloakAuthError:
-        token = None
+    token = resolve_token(ctx)
     if token:
         return {"Authorization": f"Bearer {token}"}, None
 
@@ -244,3 +236,115 @@ def resolve_auth(
             )
         }
     return {}, None
+
+
+def _api_base_url() -> str:
+    """Return the OSB (v2) API base URL used by the generated clients.
+
+    ``OSB_API_BASE_URL``, when set, is used verbatim.  Otherwise the default
+    production API base URL is returned.
+    """
+    return os.environ.get(OSB_API_BASE_URL_ENV, OSB_API_BASE_URL_DEFAULT)
+
+
+def _strip_bearer(value: str) -> str:
+    """Return the raw token from a possibly ``Bearer``-prefixed value."""
+    prefix = "bearer "
+    value = value.strip()
+    if value.lower().startswith(prefix):
+        return value[len(prefix) :].strip()
+    return value
+
+
+def resolve_token(ctx: Context | None = None) -> str | None:
+    """Return the raw OSB bearer token for the current request, if any.
+
+    The token is resolved from, in order:
+
+    1. the incoming MCP request's ``Authorization`` header (the multi-user
+       path, where the host forwards the caller's bearer token);
+    2. the ``OSB_API_TOKEN`` environment variable (the single-user path);
+    3. the Keycloak credentials in ``OSB_USERNAME``/``OSB_PASSWORD`` via
+       :func:`get_access_token`.
+
+    Any leading ``Bearer `` prefix is stripped, so callers receive the raw
+    token value that the generated API clients expect.  The token is never
+    logged.
+
+    Args:
+        ctx: The FastMCP context for the current request.  Accepted for
+            explicitness and future use; the header read itself uses the
+            request-scoped context variable.
+
+    Returns:
+        The raw access token, or ``None`` when no credential is available.
+    """
+    from fastmcp.server.dependencies import get_http_headers
+
+    request_headers = get_http_headers(include={"authorization"})
+    authorization = request_headers.get("authorization")
+    if authorization:
+        return _strip_bearer(authorization)
+
+    token = os.environ.get(OSB_API_TOKEN_ENV)
+    if token:
+        return _strip_bearer(token)
+
+    try:
+        token = get_access_token()
+    except KeycloakAuthError:
+        token = None
+    if token:
+        return token
+    return None
+
+
+def make_generated_client(
+    ctx: Context | None = None,
+    *,
+    host: str | None = None,
+    token: str | None = None,
+) -> tuple["ApiClient", "RestApi"]:
+    """Build the generated OSB API client objects.
+
+    Mirrors the working client construction::
+
+        Configuration(host=<api base url>, access_token=<token>)
+        ApiClient(configuration)
+        RestApi(api_client)
+
+    The generated client methods are coroutine functions and must be
+    awaited directly (no ``asyncio.to_thread``).
+
+    Args:
+        ctx: The FastMCP context for the current request.
+        host: Optional API base URL override.  Defaults to
+            :func:`_api_base_url`.
+        token: Optional raw access token override.  Defaults to
+            :func:`resolve_token`.
+
+    Returns:
+        A ``(api_client, rest_api)`` tuple, ready to use with direct
+        ``await rest_api.<method>(...)`` calls.
+
+    Raises:
+        KeycloakAuthError: If no token can be resolved and none is passed.
+    """
+    from workspaces.api.rest_api import RestApi
+    from workspaces.api_client import ApiClient
+    from workspaces.configuration import Configuration
+
+    if token is None:
+        token = resolve_token(ctx)
+    if token is None:
+        raise KeycloakAuthError(
+            "No bearer token available: provide an Authorization header or "
+            "set OSB_API_TOKEN / OSB_USERNAME+OSB_PASSWORD"
+        )
+
+    configuration = Configuration(
+        host=host or _api_base_url(),
+        access_token=token,
+    )
+    api_client = ApiClient(configuration)
+    return api_client, RestApi(api_client)
