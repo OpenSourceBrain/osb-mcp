@@ -39,6 +39,24 @@ def credentials(monkeypatch):
     monkeypatch.setenv("OSB_PASSWORD", "s3cret")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_keycloak_env(monkeypatch):
+    """Ignore any Keycloak overrides from the ambient environment.
+
+    Without this, an environment that sets ``OSB_KEYCLOAK_TOKEN_URL`` or
+    ``OSB_KEYCLOAK_REALM`` makes the helper post to a different endpoint than
+    the one asserted below.
+    """
+
+    for env_var in (
+        auth.OSB_KEYCLOAK_TOKEN_URL_ENV,
+        auth.OSB_KEYCLOAK_REALM_ENV,
+        auth.OSB_KEYCLOAK_CLIENT_ID_ENV,
+        auth.OSB_KEYCLOAK_CLIENT_SECRET_ENV,
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+
 def _client(handler) -> httpx.Client:
     """Return an ``httpx.Client`` backed by a ``MockTransport``."""
 

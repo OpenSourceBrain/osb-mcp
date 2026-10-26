@@ -4,9 +4,9 @@ These tests exercise ``create_workspace`` and ``upload_files_to_workspace``
 against a real, configured API instance.  They are *not* unit tests: they
 require network access and a valid ``OSB_API_TOKEN``.
 
-The whole module is skipped when ``OSB_API_TOKEN`` is unset, so it is safe to
-collect in CI.  There is deliberately no ``live`` marker -- the skip condition
-is the single gate.
+The whole module is skipped unless the live tests are explicitly enabled, so
+it is safe to collect in CI.  There is deliberately no ``live`` marker -- the
+skip condition is the single gate.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import os
 import uuid
 from datetime import UTC, datetime
 
-import httpx
 import pytest
 
 from osb_mcp.tools.workspace_tools import (
@@ -31,12 +30,30 @@ from osb_mcp.tools.workspace_tools import (
 
 logger = logging.getLogger(__name__)
 
+def _live_tests_enabled() -> bool:
+    """Return True only when live workspace tests are explicitly enabled.
+
+    The tests hit a real OSBv2 deployment, so they are opt-in: set
+    ``OSB_LIVE_TESTS=1`` together with a usable credential (``OSB_API_TOKEN``
+    or ``OSB_USERNAME``/``OSB_PASSWORD``).
+    """
+
+    if os.environ.get("OSB_LIVE_TESTS", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return False
+    return bool(os.environ.get("OSB_API_TOKEN")) or bool(
+        os.environ.get("OSB_USERNAME") and os.environ.get("OSB_PASSWORD")
+    )
+
+
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("OSB_API_TOKEN")
-    and not (os.environ.get("OSB_USERNAME") and os.environ.get("OSB_PASSWORD")),
+    not _live_tests_enabled(),
     reason=(
-        "Neither OSB_API_TOKEN nor OSB_USERNAME/OSB_PASSWORD are set; "
-        "skipping live workspace tool tests"
+        "Live workspace tool tests are opt-in: set OSB_LIVE_TESTS=1 with "
+        "OSB_API_TOKEN or OSB_USERNAME/OSB_PASSWORD to run them"
     ),
 )
 
@@ -44,25 +61,25 @@ pytestmark = pytest.mark.skipif(
 class _FakeContext:
     """Minimal stand-in for the MCP request context.
 
-    The workspace tools read the shared HTTP session from
-    ``ctx.lifespan_context["http_session"]``.  This object exposes exactly that
-    shape so the tools can be driven directly from a test.
+    The refactored workspace tools no longer read a shared HTTP session from
+    the lifespan context: they build their own client internally, so the stub
+    only needs to expose the (empty) lifespan context shape.
     """
 
-    def __init__(self, http_session: httpx.AsyncClient) -> None:
-        self.lifespan_context = {"http_session": http_session}
+    def __init__(self) -> None:
+        self.lifespan_context = {}
 
 
 @pytest.fixture
-async def ctx():
-    """Provide a real ``httpx.AsyncClient`` wrapped in a context object.
+def ctx():
+    """Provide the context object the refactored workspace tools expect.
 
-    No ``MockTransport`` is used: the client talks to the API configured via
-    ``OSB_WORKSPACES_API_URL`` (the tools read the base URL themselves).
+    No ``MockTransport`` is used: the tools talk to the API configured via
+    ``OSB_WORKSPACES_API_URL`` and read their credentials from the
+    environment.
     """
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        yield _FakeContext(client)
+    return _FakeContext()
 
 
 def _unique_name(prefix: str = "live-test") -> str:

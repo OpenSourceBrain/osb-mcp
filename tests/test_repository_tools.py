@@ -90,10 +90,26 @@ class _FakeSession:
 
 
 class _FakeCtx:
-    """Minimal FastMCP Context stand-in exposing the lifespan context."""
+    """Minimal FastMCP Context stand-in."""
 
-    def __init__(self, session=None):
-        self.lifespan_context = {"http_session": session}
+    def __init__(self):
+        self.lifespan_context = {}
+
+
+@pytest.fixture
+def patch_session(monkeypatch):
+    """Install a stub HTTP client in every repository tool module.
+
+    The tool modules bind ``_session`` at import time, so the patch has to be
+    applied to each module's own attribute rather than to the shared helper.
+    """
+
+    def _install(session):
+        for module in (github, dandi, download):
+            monkeypatch.setattr(module, "_session", lambda *args, **kwargs: session)
+        return session
+
+    return _install
 
 
 @pytest.fixture(autouse=True)
@@ -126,24 +142,6 @@ async def test_repository_tools_register():
     assert names == sorted(EXPECTED_TOOL_NAMES)
 
 
-async def test_list_tool_missing_session():
-    result = await github.list_github_files(
-        _FakeCtx(session=None), url="https://github.com/NeuroML/neuroklea"
-    )
-    assert result.is_error
-    assert result.structured_content["Error"] == "HTTP session not initialized"
-
-
-async def test_download_tool_missing_session():
-    result = await download.download_files(
-        _FakeCtx(session=None),
-        files=[{"path": "a.txt", "download_url": "https://example.com/a.txt"}],
-        target_dir="downloads",
-    )
-    assert result.is_error
-    assert result.structured_content["Error"] == "HTTP session not initialized"
-
-
 GITHUB_API = "https://api.github.com/repos/NeuroML/neuroklea"
 
 
@@ -171,10 +169,11 @@ def _github_routes():
     }
 
 
-async def test_list_github_files_passthrough():
+async def test_list_github_files_passthrough(patch_session):
     session = _FakeSession(routes=_github_routes())
+    patch_session(session)
     result = await github.list_github_files(
-        _FakeCtx(session=session),
+        _FakeCtx(),
         url="https://github.com/NeuroML/neuroklea",
         version="development",
     )
@@ -188,14 +187,15 @@ async def test_list_github_files_passthrough():
     assert any("git/trees/development" in url for url, _ in session.calls)
 
 
-async def test_list_github_versions_passthrough():
+async def test_list_github_versions_passthrough(patch_session):
     routes = {
         f"{GITHUB_API}/branches": _FakeResponse([{"name": "development"}]),
         f"{GITHUB_API}/tags": _FakeResponse([{"name": "v1.0"}]),
     }
     session = _FakeSession(routes=routes)
+    patch_session(session)
     result = await github.list_github_versions(
-        _FakeCtx(session=session), url="https://github.com/NeuroML/neuroklea"
+        _FakeCtx(), url="https://github.com/NeuroML/neuroklea"
     )
     logger.debug(f"{result = }")
     assert not result.is_error
@@ -204,14 +204,17 @@ async def test_list_github_versions_passthrough():
     assert data["versions"] == ["development", "v1.0"]
 
 
-async def test_download_files_tool_writes(tmp_path):
-    session = _FakeSession(response=_FakeResponse(b"file body", status=200))
+async def test_download_files_tool_writes(tmp_path, patch_session):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"file body")
+
+    patch_session(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     files = [
         {"path": "a.txt", "download_url": "https://example.com/a.txt"},
         {"path": "sub/b.txt", "download_url": "https://example.com/b.txt"},
     ]
     result = await download.download_files(
-        _FakeCtx(session=session),
+        _FakeCtx(),
         files=files,
         target_dir=str(tmp_path),
         max_concurrency=2,
@@ -227,7 +230,7 @@ async def test_download_files_tool_writes(tmp_path):
     assert (tmp_path / "sub" / "b.txt").read_text() == "file body"
 
 
-async def test_list_dandi_files_passthrough():
+async def test_list_dandi_files_passthrough(patch_session):
     DANDI_API = "https://api.dandiarchive.org/api"
     paths_url = f"{DANDI_API}/dandisets/000025/versions/draft/assets/paths/"
     routes = {
@@ -247,8 +250,9 @@ async def test_list_dandi_files_passthrough():
         ),
     }
     session = _FakeSession(routes=routes)
+    patch_session(session)
     result = await dandi.list_dandi_files(
-        _FakeCtx(session=session), url="https://dandiarchive.org/dandiset/000025"
+        _FakeCtx(), url="https://dandiarchive.org/dandiset/000025"
     )
     logger.debug(f"{result = }")
     assert not result.is_error
