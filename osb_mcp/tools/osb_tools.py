@@ -13,7 +13,6 @@ import inspect
 import logging
 from typing import Any
 
-import httpx
 from cachetools import TTLCache
 from fastmcp import Context
 from fastmcp.tools import ToolResult
@@ -81,7 +80,7 @@ def _to_mapping(value: Any) -> dict[str, Any]:
 @retry(
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
+    retry=retry_if_exception_type((ApiException, asyncio.TimeoutError)),
     reraise=True,
 )
 async def _search_osbv2_repos(ctx, query, content_types, user_id, max_num):
@@ -193,7 +192,7 @@ async def get_repositories_from_open_source_brain(
             error_text = f"Error authenticating with OSBv2: {e}"
             logger.error(error_text)
             return to_result({"Error": error_text})
-        except (httpx.HTTPError, TimeoutError, ApiException) as e:
+        except (TimeoutError, ApiException) as e:
             error_text = f"Error searching OSBv2: {e.__class__.__name__}: {e}"
             logger.error(error_text)
             return to_result({"Error": error_text})
