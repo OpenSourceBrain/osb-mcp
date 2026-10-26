@@ -15,9 +15,14 @@ Author: Ankur Sinha <sanjay DOT ankur AT gmail DOT com>
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 from fastmcp import Context
+
+if TYPE_CHECKING:
+    from workspaces.api.rest_api import RestApi
+    from workspaces.api_client import ApiClient
 
 logger = logging.getLogger(__name__)
 
