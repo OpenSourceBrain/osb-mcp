@@ -14,8 +14,6 @@ import asyncio
 import json
 from typing import Any
 
-from klea_utils.mcp.schemas import ToolInfo
-
 from osb_mcp.auth import KeycloakAuthError
 from osb_mcp.tools import workspace_tools
 from osb_mcp.tools.workspace_tools import (
