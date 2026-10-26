@@ -9,6 +9,7 @@ Author: Ankur Sinha <sanjay DOT ankur AT gmail DOT com>
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Any
 
@@ -26,13 +27,55 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from osb_mcp.auth import KeycloakAuthError, make_generated_client
+
+try:  # pragma: no cover - depends on the generated client at runtime
+    from workspaces.exceptions import ApiException
+except ImportError:  # pragma: no cover
+    ApiException = Exception  # type: ignore[assignment, misc]
+
 logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 20
-SEARCH_TIMEOUT = httpx.Timeout(30)
 
 # Cache for OSBv2 search results (2 hour TTL, max 100 entries)
 OSBv2_SEARCH_CACHE: TTLCache[str, Any] = TTLCache(maxsize=100, ttl=7200)
+
+
+def _accepted_kwargs(func, params: dict[str, Any]) -> dict[str, Any]:
+    """Return only the ``params`` that ``func`` accepts.
+
+    The generated client's method signature differs between API revisions,
+    so parameters the endpoint does not declare are dropped instead of
+    raising ``TypeError``.
+    """
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return dict(params)
+
+    parameters = signature.parameters.values()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        return dict(params)
+
+    names = set(signature.parameters)
+    return {key: value for key, value in params.items() if key in names}
+
+
+def _to_mapping(value: Any) -> dict[str, Any]:
+    """Return a plain mapping for a generated-client response value."""
+    if isinstance(value, dict):
+        return value
+    for attr in ("to_dict", "model_dump", "dict"):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                mapped = method()
+            except TypeError:  # pragma: no cover - unexpected signature
+                continue
+            if isinstance(mapped, dict):
+                return mapped
+    return value  # type: ignore[return-value]
 
 
 @retry(
@@ -41,23 +84,26 @@ OSBv2_SEARCH_CACHE: TTLCache[str, Any] = TTLCache(maxsize=100, ttl=7200)
     retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
     reraise=True,
 )
-async def _search_osbv2_repos(session, url, query, content_types, user_id, max_num):
-    """Search OSBv2 repositories with retry logic."""
-    response = await session.get(
-        url,
-        params={
-            "q": query,
-            "types": content_types,
-            "user_id": user_id,
-            "page": 1,
-            "per_page": max_num,
-        },
-        timeout=SEARCH_TIMEOUT,
-        follow_redirects=True,
+async def _search_osbv2_repos(ctx, query, content_types, user_id, max_num):
+    """Search OSBv2 repositories through the generated API client.
+
+    Builds the generated ``Configuration``/``ApiClient``/``RestApi`` objects
+    via :func:`osb_mcp.auth.make_generated_client` and awaits the generated
+    endpoint directly.
+    """
+    _, rest_api = make_generated_client(ctx)
+
+    params = {
+        "q": query,
+        "types": content_types,
+        "user_id": user_id,
+        "page": 1,
+        "per_page": max_num,
+    }
+    response = await rest_api.osbrepository_get(
+        **_accepted_kwargs(rest_api.osbrepository_get, params)
     )
-    logger.debug(f"{response.request = }")
-    response.raise_for_status()
-    return response.json()
+    return _to_mapping(response)
 
 
 @tool_meta(
@@ -110,15 +156,8 @@ async def get_repositories_from_open_source_brain(
 
     num = max(1, min(num, MAX_RESULTS))
 
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
     # swagger-dev: https://workspaces.v2dev.opensourcebrain.org/api/ui/
     # swagger: https://workspaces.v2.opensourcebrain.org/api/ui/
-    osb_repo_search_url = (
-        "https://v2.opensourcebrain.org/proxy/workspaces/api/osbrepository"
-    )
 
     # OSB Admin user id: we limit the search to repositories added by the Admin only
     user_id = "7aafb661-2f39-4683-8f35-528de0752dd7"
@@ -143,15 +182,18 @@ async def get_repositories_from_open_source_brain(
     else:
         try:
             res = await _search_osbv2_repos(
-                session,
-                osb_repo_search_url,
+                ctx,
                 query,
                 content_types,
                 user_id,
                 max_num=num,
             )
             OSBv2_SEARCH_CACHE[cache_key] = res
-        except (httpx.HTTPError, TimeoutError) as e:
+        except KeycloakAuthError as e:
+            error_text = f"Error authenticating with OSBv2: {e}"
+            logger.error(error_text)
+            return to_result({"Error": error_text})
+        except (httpx.HTTPError, TimeoutError, ApiException) as e:
             error_text = f"Error searching OSBv2: {e.__class__.__name__}: {e}"
             logger.error(error_text)
             return to_result({"Error": error_text})
