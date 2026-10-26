@@ -31,7 +31,16 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from osb_mcp.auth import resolve_auth
+from osb_mcp.auth import KeycloakAuthError, make_generated_client, resolve_auth
+
+try:  # pragma: no cover - depends on the generated client at runtime
+    from workspaces.exceptions import ApiException
+    from workspaces.models.tag import Tag
+    from workspaces.models.workspace import Workspace
+except ImportError:  # pragma: no cover
+    ApiException = Exception  # type: ignore[assignment, misc]
+    Tag = None  # type: ignore[assignment, misc]
+    Workspace = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +75,33 @@ def _http_error_detail(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f" (HTTP {exc.response.status_code}): {exc.response.text[:2000]}"
     return ""
+
+
+def _generated_error_detail(exc: Exception) -> str:
+    """Return HTTP status and reason details for a generated-client error."""
+    status = getattr(exc, "status", None)
+    if status is None:
+        return ""
+    reason = getattr(exc, "reason", "")
+    return f" (HTTP {status}): {reason}"
+
+
+def _to_mapping(value: Any) -> dict[str, Any]:
+    """Return a plain mapping for a generated-client response value."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    for attr in ("to_dict", "model_dump", "dict"):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                mapped = method()
+            except TypeError:  # pragma: no cover - unexpected signature
+                continue
+            if isinstance(mapped, dict):
+                return mapped
+    return {"status": value}
 
 
 @retry(
@@ -233,41 +269,33 @@ async def create_workspace(
     if not name:
         return to_result({"Error": "name must be a non-empty string"})
 
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, error = resolve_auth(ctx, required=True)
-    if error is not None:
-        return to_result(error)
-
-    payload: dict[str, Any] = {
+    workspace_data: dict[str, Any] = {
         "name": name,
         "description": description,
         "publicable": publicable,
         "featured": featured,
     }
     if license is not None:
-        payload["license"] = license
+        workspace_data["license"] = license
     if tags:
-        payload["tags"] = [{"tag": tag} for tag in tags]
-
-    url = f"{_api_base_url()}/workspace"
+        workspace_data["tags"] = [Tag(tag=tag) for tag in tags]
 
     try:
-        res = await _post_json(session, url, payload, headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        res = await rest_api.workspace_post(workspace=Workspace(**workspace_data))
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error creating workspace: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result(_to_mapping(res))
 
 
 @tool_meta(
@@ -409,34 +437,27 @@ async def get_workspaces(
         Dictionary of the matching workspaces and pagination on success, or
         a dictionary with an ``Error`` key on failure.
     """
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, _ = resolve_auth(ctx, required=False)
-
-    params: dict[str, Any] = {"page": page, "per_page": per_page}
-    if q is not None:
-        params["q"] = q
-    if tags is not None:
-        params["tags"] = tags
-
-    url = f"{_api_base_url()}/workspace"
-
     try:
-        res = await _get_json(session, url, params, headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        res = await rest_api.workspace_get(
+            page=page,
+            per_page=per_page,
+            q=q,
+            tags=tags,
+        )
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error getting workspaces: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result(_to_mapping(res))
 
 
 @tool_meta(
@@ -473,28 +494,22 @@ async def get_workspace(
         Dictionary of the workspace (including its ``resources``) on
         success, or a dictionary with an ``Error`` key on failure.
     """
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, _ = resolve_auth(ctx, required=False)
-
-    url = f"{_api_base_url()}/workspace/{workspace_id}"
-
     try:
-        res = await _get_json(session, url, headers=headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        res = await rest_api.workspace_id_get(id=workspace_id)
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error getting workspace: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result(_to_mapping(res))
 
 
 @tool_meta(
@@ -530,30 +545,22 @@ async def delete_workspace(
         Dictionary with the API response on success, or a dictionary with
         an ``Error`` key on failure.
     """
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, error = resolve_auth(ctx, required=True)
-    if error is not None:
-        return to_result(error)
-
-    url = f"{_api_base_url()}/workspace/{workspace_id}"
-
     try:
-        res = await _delete_json(session, url, headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        await rest_api.workspace_id_delete(id=workspace_id)
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error deleting workspace: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result({"workspace_id": workspace_id, "status": "deleted"})
 
 
 @tool_meta(
