@@ -11,70 +11,36 @@ Copyright 2026 Ankur Sinha
 Author: Ankur Sinha <sanjay DOT ankur AT gmail DOT com>
 """
 
-import asyncio
-import json
 import logging
-import os
 from typing import Annotated, Any
 
-import httpx
 from fastmcp import Context
 from fastmcp.tools import ToolResult
 from klea_utils.mcp.registry import tool_meta
 from klea_utils.mcp.schemas import ToolInfo
 from klea_utils.mcp.tool_result import to_result
 from pydantic import Field
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
 
-from osb_mcp.auth import KeycloakAuthError, make_generated_client, resolve_auth
+from osb_mcp.auth import KeycloakAuthError, make_generated_client
 
 try:  # pragma: no cover - depends on the generated client at runtime
     from workspaces.exceptions import ApiException
     from workspaces.models.tag import Tag
     from workspaces.models.workspace import Workspace
+    from workspaces.models.workspaces_controllers_workspace_controller_import_resources_request import (
+        WorkspacesControllersWorkspaceControllerImportResourcesRequest as ImportResourcesRequest,
+    )
 except ImportError:  # pragma: no cover
     ApiException = Exception  # type: ignore[assignment, misc]
     Tag = None  # type: ignore[assignment, misc]
     Workspace = None  # type: ignore[assignment, misc]
+    ImportResourcesRequest = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
-
-#: Environment variable overriding the base URL of the OSB Workspaces
-#: manager REST API.
-OSB_WORKSPACES_API_URL_ENV = "OSB_WORKSPACES_API_URL"
-#: Default base URL of the OSB Workspaces manager REST API.
-OSB_WORKSPACES_API_URL_DEFAULT = "https://workspaces.v2.opensourcebrain.org/api"
 
 #: Environment variable holding the bearer token used to authenticate
 #: write requests to the Workspaces manager API.
 OSB_API_TOKEN_ENV = "OSB_API_TOKEN"
-
-REQUEST_TIMEOUT = httpx.Timeout(30)
-
-
-def _api_base_url() -> str:
-    """Return the base URL of the OSB Workspaces manager API."""
-    return os.environ.get(
-        OSB_WORKSPACES_API_URL_ENV, OSB_WORKSPACES_API_URL_DEFAULT
-    ).rstrip("/")
-
-
-def _http_error_detail(exc: Exception) -> str:
-    """Return the HTTP status and response body for an HTTP status error.
-
-    ``httpx.HTTPStatusError`` carries the failing response, whose body is
-    otherwise discarded by ``raise_for_status``.  Other ``httpx.HTTPError``
-    subclasses (for example ``ConnectError``) have no response, so an empty
-    string is returned for them.
-    """
-    if isinstance(exc, httpx.HTTPStatusError):
-        return f" (HTTP {exc.response.status_code}): {exc.response.text[:2000]}"
-    return ""
 
 
 def _generated_error_detail(exc: Exception) -> str:
@@ -102,110 +68,6 @@ def _to_mapping(value: Any) -> dict[str, Any]:
             if isinstance(mapped, dict):
                 return mapped
     return {"status": value}
-
-
-@retry(
-    wait=wait_random_exponential(multiplier=1, max=10),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
-    reraise=True,
-)
-async def _post_json(session, url, payload, headers):
-    """POST a JSON payload to the Workspaces manager API with retries."""
-    response = await session.post(
-        url,
-        json=payload,
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
-        follow_redirects=True,
-    )
-    logger.debug(f"{response.request = }")
-    if response.is_error:
-        logger.error(
-            "HTTP %s from %s: %s",
-            response.status_code,
-            url,
-            response.text[:2000],
-        )
-    response.raise_for_status()
-    if response.content:
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {
-                "status_code": response.status_code,
-                "body": response.text[:2000],
-            }
-    return {"status_code": response.status_code}
-
-
-@retry(
-    wait=wait_random_exponential(multiplier=1, max=10),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
-    reraise=True,
-)
-async def _get_json(session, url, params=None, headers=None):
-    """GET a JSON resource from the Workspaces manager API with retries."""
-    response = await session.get(
-        url,
-        params=params,
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
-        follow_redirects=True,
-    )
-    logger.debug(f"{response.request = }")
-    if response.is_error:
-        logger.error(
-            "HTTP %s from %s: %s",
-            response.status_code,
-            url,
-            response.text[:2000],
-        )
-    response.raise_for_status()
-    if response.content:
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {
-                "status_code": response.status_code,
-                "body": response.text[:2000],
-            }
-    return {"status_code": response.status_code}
-
-
-@retry(
-    wait=wait_random_exponential(multiplier=1, max=10),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
-    reraise=True,
-)
-async def _delete_json(session, url, headers):
-    """DELETE a resource from the Workspaces manager API with retries."""
-    response = await session.delete(
-        url,
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
-        follow_redirects=True,
-    )
-    logger.debug(f"{response.request = }")
-    if response.is_error:
-        logger.error(
-            "HTTP %s from %s: %s",
-            response.status_code,
-            url,
-            response.text[:2000],
-        )
-    response.raise_for_status()
-    if response.content:
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {
-                "status_code": response.status_code,
-                "body": response.text[:2000],
-            }
-    return {"status_code": response.status_code}
 
 
 @tool_meta(
@@ -349,31 +211,26 @@ async def upload_files_to_workspace(
     if not files:
         return to_result({"Error": "files must be a non-empty list"})
 
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, error = resolve_auth(ctx, required=True)
-    if error is not None:
-        return to_result(error)
-
-    payload = {"resourceorigins": files}
-    url = f"{_api_base_url()}/workspace/{workspace_id}/import"
-
     try:
-        res = await _post_json(session, url, payload, headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        request = ImportResourcesRequest(resourceorigins=files)
+        res = await rest_api.workspaces_controllers_workspace_controller_import_resources(
+            id=workspace_id,
+            workspaces_controllers_workspace_controller_import_resources_request=request,
+        )
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error uploading files to workspace: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result(_to_mapping(res))
 
 
 @tool_meta(
@@ -598,27 +455,19 @@ async def delete_resource(
         Dictionary with the API response on success, or a dictionary with
         an ``Error`` key on failure.
     """
-    session: httpx.AsyncClient = ctx.lifespan_context["http_session"]
-    if session is None:
-        return to_result({"Error": "OSB session not initialized"})
-
-    headers, error = resolve_auth(ctx, required=True)
-    if error is not None:
-        return to_result(error)
-
-    url = f"{_api_base_url()}/workspaceresource/{resource_id}"
-
     try:
-        res = await _delete_json(session, url, headers)
-    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError) as e:
+        _, rest_api = make_generated_client(ctx)
+        await rest_api.workspaceresource_id_delete(id=resource_id)
+    except KeycloakAuthError as e:
+        error_text = f"Error authenticating with OSBv2: {e}"
+        logger.error(error_text)
+        return to_result({"Error": error_text})
+    except (TimeoutError, ApiException) as e:
         error_text = (
             f"Error deleting resource: {e.__class__.__name__}: {e}"
-            f"{_http_error_detail(e)}"
+            f"{_generated_error_detail(e)}"
         )
         logger.error(error_text)
         return to_result({"Error": error_text})
 
-    if not isinstance(res, dict):
-        res = {"status": res}
-
-    return to_result(res)
+    return to_result({"resource_id": resource_id, "status": "deleted"})
